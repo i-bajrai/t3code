@@ -12,11 +12,13 @@ import {
 import {
   ArrowUpRightIcon,
   EyeIcon,
+  FolderOpenIcon,
   EyeOffIcon,
   LinkIcon,
   MoreHorizontalIcon,
   PlusIcon,
 } from "lucide-react";
+import { useAtomValue } from "@effect/atom-react";
 import { LegendList } from "@legendapp/list/react";
 import { memo, useState } from "react";
 
@@ -35,6 +37,10 @@ import { PullRequestsUnavailableState } from "./PullRequestsUnavailableState";
 import { threadEnvironment } from "~/state/threads";
 import { useAtomCommand } from "~/state/use-atom-command";
 import { RelativeTime } from "~/components/RelativeTime";
+import { useEnvironmentQuery } from "~/state/query";
+import { primaryServerAvailableEditorsAtom } from "~/state/server";
+import { vcsEnvironment } from "~/state/vcs";
+import { useOpenInFavoriteEditor } from "../chat/OpenInPickerShortcut";
 import { Button } from "../ui/button";
 import { Menu, MenuItem, MenuPopup, MenuTrigger } from "../ui/menu";
 import { MiddleTruncate } from "../ui/middle-truncate";
@@ -89,6 +95,7 @@ function LinkRowImpl({
   line,
   threadRef,
   projectId,
+  checkoutCwd,
   speedMode,
   onUnlink,
   onSetWatching,
@@ -96,6 +103,7 @@ function LinkRowImpl({
   line: PullRequestListLine;
   threadRef: ScopedThreadRef;
   projectId: ProjectId | null;
+  checkoutCwd: string | null;
   speedMode: boolean;
   onUnlink: (link: ThreadPullRequestLink) => void;
   onSetWatching: ((link: ThreadPullRequestLink, watching: boolean) => void) | null;
@@ -128,6 +136,22 @@ function LinkRowImpl({
       : null;
   const hasQuickActions =
     actionEntry !== null && pullRequestQuickActions(actionEntry, linkHostActions).length > 0;
+  const favoriteEditor = useOpenInFavoriteEditor(
+    threadRef.environmentId,
+    useAtomValue(primaryServerAvailableEditorsAtom),
+  );
+  const headBranch = snapshot?.headBranch ?? null;
+  // Only an open menu asks for refs, so threads with hundreds of links stay cheap.
+  const headRefsQuery = useEnvironmentQuery(
+    menuOpen && favoriteEditor !== null && checkoutCwd !== null && headBranch !== null
+      ? vcsEnvironment.listRefs({
+          environmentId: threadRef.environmentId,
+          input: { cwd: checkoutCwd, query: headBranch, refKind: "local" },
+        })
+      : null,
+  );
+  const headWorktreePath =
+    headRefsQuery.data?.refs.find((ref) => ref.name === headBranch)?.worktreePath ?? null;
   return (
     <div
       className={cn(PULL_REQUEST_ROW_CLASS, "relative hover:bg-accent/60")}
@@ -330,6 +354,19 @@ function LinkRowImpl({
               <ArrowUpRightIcon className="size-3.5" />
               Open
             </MenuItem>
+            {favoriteEditor !== null && headBranch !== null ? (
+              <MenuItem
+                disabled={headWorktreePath === null}
+                onClick={() => {
+                  if (headWorktreePath !== null) favoriteEditor.open(headWorktreePath);
+                }}
+              >
+                <FolderOpenIcon className="size-3.5" />
+                {headWorktreePath !== null || headRefsQuery.isPending
+                  ? `Open in ${favoriteEditor.label}`
+                  : "Not checked out locally"}
+              </MenuItem>
+            ) : null}
             {onSetWatching !== null && open ? (
               <MenuItem onClick={() => onSetWatching(link, !watching)}>
                 {watching ? <EyeOffIcon className="size-3.5" /> : <EyeIcon className="size-3.5" />}
@@ -451,22 +488,24 @@ function EnabledThreadPullRequestsPanel({ threadRef }: { threadRef: ScopedThread
           data={lines}
           keyExtractor={lineKey}
           extraData={rowInputs}
-          renderItem={({ item: line }) => (
-            <LinkRow
-              line={line}
-              threadRef={threadRef}
-              projectId={
-                capabilities !== undefined
-                  ? (findProjectForChangeRequest(environmentProjects, line.link)?.id ??
-                    thread?.projectId ??
-                    null)
-                  : null
-              }
-              speedMode={speedMode}
-              onUnlink={handleUnlink}
-              onSetWatching={supportsWatch ? handleSetWatching : null}
-            />
-          )}
+          renderItem={({ item: line }) => {
+            const project =
+              findProjectForChangeRequest(environmentProjects, line.link) ??
+              environmentProjects.find((candidate) => candidate.id === thread?.projectId);
+            return (
+              <LinkRow
+                line={line}
+                threadRef={threadRef}
+                projectId={
+                  capabilities !== undefined ? (project?.id ?? thread?.projectId ?? null) : null
+                }
+                checkoutCwd={project?.workspaceRoot ?? thread?.worktreePath ?? null}
+                speedMode={speedMode}
+                onUnlink={handleUnlink}
+                onSetWatching={supportsWatch ? handleSetWatching : null}
+              />
+            );
+          }}
           estimatedItemSize={44}
           drawDistance={440}
           className="min-h-0 flex-1 overscroll-contain p-1.5"
